@@ -11,12 +11,12 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.config import settings
-from backend.db.database import init_db, get_db, Order, Strategy, TradeLog, AsyncSessionLocal
+from backend.db.database import init_db, Order, Strategy, AsyncSessionLocal
 from backend.webull.client import webull, STUB_MODE, _has_credentials
 from backend.agent import engine as agent_engine
 import backend.telegram_bot as tg_bot
 from sqlalchemy import select, desc
-import json, os
+import os
 
 # ── WebSocket connection manager ──────────────────────────────────────────────
 
@@ -299,7 +299,21 @@ async def get_logs():
 
 # ── Market movers routes ──────────────────────────────────────────────────────
 
-from backend.market.movers import get_all_movers, get_screen, get_snapshots, get_crypto_markets
+from backend.market.movers import get_all_movers, get_screen, get_crypto_markets
+
+@app.get("/api/market/session")
+async def market_session():
+    from zoneinfo import ZoneInfo
+    from datetime import datetime as _dt
+    et = _dt.now(ZoneInfo("America/New_York"))
+    return {
+        "session": webull._market_session(),
+        "et_time": et.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "et_hour": et.hour,
+        "et_minute": et.minute,
+        "weekday": et.strftime("%A"),
+    }
+
 
 @app.get("/api/market/movers")
 async def market_movers():

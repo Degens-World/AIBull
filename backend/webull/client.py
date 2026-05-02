@@ -283,12 +283,12 @@ class WebullClient:
 
     @staticmethod
     def _market_session() -> str:
-        """Return 'pre', 'regular', 'post', or 'closed' based on US ET time."""
-        from datetime import timezone, timedelta
-        et = datetime.now(timezone(timedelta(hours=-4)))  # EDT; close enough year-round
-        h, m = et.hour, et.minute
-        minutes = h * 60 + m
-        wd = et.weekday()
+        """Return 'pre', 'regular', 'post', or 'closed' based on US Eastern time.
+        Uses zoneinfo so DST (EDT/EST) is handled automatically."""
+        from zoneinfo import ZoneInfo
+        et = datetime.now(ZoneInfo("America/New_York"))
+        minutes = et.hour * 60 + et.minute
+        wd = et.weekday()   # 0=Mon … 4=Fri, 5=Sat, 6=Sun
         if wd >= 5:
             return "closed"
         if 240 <= minutes < 570:    # 4:00–9:30 AM ET

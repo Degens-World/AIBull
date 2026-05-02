@@ -19,8 +19,8 @@ _bought_today: dict[str, set] = {}  # "YYYY-MM-DD" → set of symbols
 
 
 def _et_date() -> str:
-    from datetime import timezone, timedelta
-    return datetime.now(timezone(timedelta(hours=-4))).strftime("%Y-%m-%d")
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
 
 def _pdt_record_buy(symbol: str):
