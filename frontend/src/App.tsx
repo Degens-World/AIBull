@@ -7,10 +7,11 @@ import Crypto from './pages/Crypto'
 import Strategies from './pages/Strategies'
 import Market from './pages/Market'
 import Settings from './pages/Settings'
-import { LayoutDashboard, TrendingUp, Briefcase, Bot, Settings2, Wifi, WifiOff, BarChart2, Activity, Coins } from 'lucide-react'
+import Events from './pages/Events'
+import { LayoutDashboard, TrendingUp, Briefcase, Bot, Settings2, Wifi, WifiOff, BarChart2, Activity, Coins, Zap } from 'lucide-react'
 import clsx from 'clsx'
 
-type Page = 'dashboard' | 'trading' | 'portfolio' | 'performance' | 'crypto' | 'strategies' | 'market' | 'settings'
+type Page = 'dashboard' | 'trading' | 'portfolio' | 'performance' | 'crypto' | 'strategies' | 'market' | 'events' | 'settings'
 
 const NAV = [
   { id: 'dashboard'   as Page, label: 'Dashboard',   icon: LayoutDashboard },
@@ -20,6 +21,7 @@ const NAV = [
   { id: 'crypto'      as Page, label: 'Crypto',       icon: Coins },
   { id: 'strategies'  as Page, label: 'Strategies',   icon: Bot },
   { id: 'market'      as Page, label: 'Market',       icon: BarChart2 },
+  { id: 'events'      as Page, label: 'Predictions',  icon: Zap },
   { id: 'settings'    as Page, label: 'Settings',     icon: Settings2 },
 ]
 
@@ -132,6 +134,7 @@ export default function App() {
         {page === 'crypto'      && <Crypto       {...sharedProps} />}
         {page === 'strategies'  && <Strategies   {...sharedProps} />}
         {page === 'market'      && <Market />}
+        {page === 'events'      && <Events />}
         {page === 'settings'    && <Settings />}
       </main>
     </div>

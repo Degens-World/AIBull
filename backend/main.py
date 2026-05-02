@@ -453,6 +453,33 @@ async def save_credentials(req: CredentialsUpdate):
     return {"status": "saved", "updated_keys": list(updates.keys())}
 
 
+# ── Event / Prediction Market routes ─────────────────────────────────────────
+
+@app.get("/api/events/series")
+async def event_series():
+    return await webull.get_event_series()
+
+@app.get("/api/events/contracts/{series_symbol}")
+async def event_contracts(series_symbol: str):
+    return await webull.get_event_contracts(series_symbol)
+
+@app.get("/api/events/snapshot")
+async def event_snapshot(symbols: str):
+    return await webull.get_event_snapshot(symbols.split(","))
+
+class EventOrderRequest(BaseModel):
+    symbol: str
+    outcome: str       # "yes" or "no"
+    quantity: int
+    limit_price: float
+
+@app.post("/api/events/order")
+async def place_event_order(req: EventOrderRequest):
+    return await webull.place_event_order(
+        req.symbol, req.outcome, req.quantity, req.limit_price
+    )
+
+
 # ── Telegram routes ───────────────────────────────────────────────────────────
 
 class TelegramAlertRequest(BaseModel):

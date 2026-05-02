@@ -94,6 +94,33 @@ const PRESETS: Record<string, any> = {
       scan_limit: 25, max_position_usd: 1000, extended_hours: false, asset_class: 'stocks',
     },
   },
+  events_conservative: {
+    key: 'events_conservative', label: 'Conservative', group: 'Predictions',
+    name: 'Predictions — Conservative', description: 'Scans Webull prediction markets. Bets only on high-conviction mispricing (>15% edge).',
+    strategy_type: 'events', symbols: [],
+    config: {
+      system_prompt: "You are a conservative prediction market trader on Webull. Each contract pays $1 if correct, $0 if wrong — price IS the implied probability. Only bet when you are highly confident the market probability is wrong by at least 15%. Prefer PASS. Never bet on uncertain or close calls. Keep position sizes small.",
+      scan_limit: 20, max_position_usd: 50, extended_hours: false, asset_class: 'events',
+    },
+  },
+  events_moderate: {
+    key: 'events_moderate', label: 'Moderate', group: 'Predictions',
+    name: 'Predictions — Moderate', description: 'Balanced prediction market trading. Bets when >10% edge is identified.',
+    strategy_type: 'events', symbols: [],
+    config: {
+      system_prompt: "You are a balanced prediction market trader on Webull. Each contract pays $1.00 if the event happens, $0.00 if it doesn't. You profit by finding markets where the price (implied probability) is significantly different from the true probability. Bet YES if you think the event is more likely than the market implies. Bet NO if you think it is less likely. Require at least 10% edge. Return [] if no contracts offer clear edge.",
+      scan_limit: 30, max_position_usd: 150, extended_hours: false, asset_class: 'events',
+    },
+  },
+  events_aggressive: {
+    key: 'events_aggressive', label: 'Aggressive', group: 'Predictions',
+    name: 'Predictions — Aggressive', description: 'Actively hunts mispriced prediction markets. Larger positions, lower conviction threshold.',
+    strategy_type: 'events', symbols: [],
+    config: {
+      system_prompt: "You are an aggressive prediction market trader on Webull. Actively scan all open prediction contracts for mispriced probabilities. Each contract pays $1.00 win / $0.00 loss. Your edge is superior probability assessment. Use technical analysis, recent news, momentum, and market structure to assess true outcome probability vs the implied market price. Bet YES when probability is underpriced, NO when overpriced. Require at least 7% edge.",
+      scan_limit: 50, max_position_usd: 300, extended_hours: false, asset_class: 'events',
+    },
+  },
   momentum_conservative: {
     key: 'momentum_conservative', label: 'Conservative', group: 'Momentum',
     name: 'Momentum — Conservative', description: '$2–$20 small-caps, 3x+ rel vol, 2 positions max, tight stops.',
@@ -136,7 +163,7 @@ const RISK_ACTIVE: Record<string, string> = {
 
 function PresetPicker({ onSelect }: { onSelect: (preset: any) => void }) {
   const [activeKey, setActiveKey] = useState<string | null>(null)
-  const groups = ['Stocks', 'Crypto', 'Options', 'Momentum']
+  const groups = ['Stocks', 'Crypto', 'Options', 'Momentum', 'Predictions']
   const presetList = Object.values(PRESETS)
 
   return (
@@ -186,6 +213,8 @@ function DecisionBadge({ action }: { action: string }) {
     BUY_PUT:       'bg-orange-500/20 text-orange-400',
     SELL_TO_CLOSE: 'bg-red-trade/20 text-red-trade',
     PASS:          'bg-gray-700 text-gray-400',
+    BUY_YES:       'bg-green-trade/20 text-green-trade',
+    BUY_NO:        'bg-red-trade/20 text-red-trade',
   }
   return <span className={clsx('text-xs px-1.5 py-0.5 rounded font-semibold', colors[action] ?? 'bg-gray-700 text-gray-400')}>{action}</span>
 }
@@ -379,7 +408,7 @@ export default function Strategies({ engineStatus, refreshEngine }: any) {
                     {s.symbols?.map((sym: string) => (
                       <span key={sym} className="text-xs bg-[#21262d] text-gray-300 px-2 py-0.5 rounded">{sym}</span>
                     ))}
-                    {(!s.symbols || s.symbols.length === 0) && (s.strategy_type === 'claude' || s.strategy_type === 'options' || s.strategy_type === 'momentum') && (
+                    {(!s.symbols || s.symbols.length === 0) && (s.strategy_type === 'claude' || s.strategy_type === 'options' || s.strategy_type === 'momentum' || s.strategy_type === 'events') && (
                       <span className="text-xs text-accent">Auto market scan</span>
                     )}
                     {(!s.symbols || s.symbols.length === 0) && s.strategy_type === 'sma_crossover' && (
@@ -403,7 +432,7 @@ export default function Strategies({ engineStatus, refreshEngine }: any) {
                 </div>
               </div>
               <StrategyDecisions strategyId={s.id} />
-              {(s.strategy_type === 'claude' || s.strategy_type === 'options' || s.strategy_type === 'momentum') && <StrategyMemory strategyId={s.id} />}
+              {(s.strategy_type === 'claude' || s.strategy_type === 'options' || s.strategy_type === 'momentum' || s.strategy_type === 'events') && <StrategyMemory strategyId={s.id} />}
             </div>
           )
         })}
@@ -447,12 +476,13 @@ export default function Strategies({ engineStatus, refreshEngine }: any) {
               <label className="text-xs text-gray-400 block mb-1">Type</label>
               <select value={form.strategy_type} onChange={e => {
                 const t = e.target.value
-                setForm(f => ({ ...f, strategy_type: t, config: (t === 'claude' || t === 'options' || t === 'momentum') ? DEFAULT_CLAUDE : DEFAULT_SMA }))
+                setForm(f => ({ ...f, strategy_type: t, config: (t === 'claude' || t === 'options' || t === 'momentum' || t === 'events') ? DEFAULT_CLAUDE : DEFAULT_SMA }))
               }} className="w-full bg-[#0d1117] border border-[#30363d] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent">
                 <option value="sma_crossover">SMA Crossover</option>
                 <option value="claude">AI Agent (Claude / Ollama)</option>
                 <option value="options">Options Agent (calls &amp; puts)</option>
                 <option value="momentum">Momentum Agent ($2–$20 small-caps)</option>
+                <option value="events">Predictions Agent (Webull event markets)</option>
               </select>
             </div>
 
@@ -484,7 +514,7 @@ export default function Strategies({ engineStatus, refreshEngine }: any) {
               </div>
             )}
 
-            {(form.strategy_type === 'claude' || form.strategy_type === 'options' || form.strategy_type === 'momentum') && (
+            {(form.strategy_type === 'claude' || form.strategy_type === 'options' || form.strategy_type === 'momentum' || form.strategy_type === 'events') && (
               <>
                 <div className="grid grid-cols-3 gap-3">
                   {form.strategy_type === 'claude' && (
@@ -536,6 +566,8 @@ export default function Strategies({ engineStatus, refreshEngine }: any) {
                     ? '💡 Leave Symbols empty to auto-scan top movers for option setups. Options only execute during regular market hours (9:30am–4pm ET). The agent fetches live option chains from Yahoo Finance and picks contracts based on your prompt.'
                     : form.strategy_type === 'momentum'
                     ? '💡 Momentum agent only runs during regular market hours (9:30am–4pm ET). It scans Yahoo Finance gainers + most-active, filters to $2–$20 stocks with 750k+ avg volume and 2x+ relative volume, then asks Claude to rank and execute the best setups in one batch call. Allocation scales automatically with position count.'
+                    : form.strategy_type === 'events'
+                    ? '💡 Predictions agent trades Webull\'s prediction market contracts. Each contract pays $1.00 if the event occurs and $0.00 if it doesn\'t — the price is the implied probability. Claude scans all open contracts, finds mispriced probabilities, and places BUY YES or BUY NO orders. Runs pre-market through after-hours.'
                     : '💡 Leave Symbols empty to auto-scan — stocks mode scans top gainers & most active, crypto mode scans the full crypto watchlist, mixed does both. Memory persists across restarts.'}
                 </div>
               </>

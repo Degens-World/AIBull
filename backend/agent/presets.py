@@ -169,6 +169,72 @@ PRESETS = {
         },
         "enabled": False,
     },
+    "events_conservative": {
+        "name": "Predictions — Conservative",
+        "description": "Scans all open Webull prediction markets. Only bets on high-conviction mispricing (>15% edge).",
+        "strategy_type": "events",
+        "symbols": [],
+        "config": {
+            "system_prompt": (
+                "You are a conservative prediction market trader on Webull. "
+                "Each contract pays $1 if correct, $0 if wrong — price IS the implied probability. "
+                "Only bet when you are highly confident the market probability is wrong by at least 15%. "
+                "Prefer PASS. Never bet on uncertain or close calls. Keep position sizes small."
+            ),
+            "scan_limit": 20,
+            "max_position_usd": 50,
+            "extended_hours": False,
+            "asset_class": "events",
+        },
+        "enabled": False,
+    },
+    "events_moderate": {
+        "name": "Predictions — Moderate",
+        "description": "Balanced prediction market trading. Bets when >10% edge is identified.",
+        "strategy_type": "events",
+        "symbols": [],
+        "config": {
+            "system_prompt": (
+                "You are a balanced prediction market trader on Webull. "
+                "Each contract pays $1.00 if the event happens, $0.00 if it doesn't. "
+                "You profit by finding markets where the price (implied probability) "
+                "is significantly different from the true probability. "
+                "Use your knowledge of market trends, technicals, and news to assess "
+                "whether the market is overpricing or underpricing the outcome. "
+                "Bet YES if you think the event is more likely than the market implies. "
+                "Bet NO if you think it is less likely. Require at least 10% edge. "
+                "Return [] if no contracts offer clear edge."
+            ),
+            "scan_limit": 30,
+            "max_position_usd": 150,
+            "extended_hours": False,
+            "asset_class": "events",
+        },
+        "enabled": False,
+    },
+    "events_aggressive": {
+        "name": "Predictions — Aggressive",
+        "description": "Actively hunts mispriced prediction markets. Larger positions, lower conviction threshold.",
+        "strategy_type": "events",
+        "symbols": [],
+        "config": {
+            "system_prompt": (
+                "You are an aggressive prediction market trader on Webull. "
+                "Actively scan all open prediction contracts for mispriced probabilities. "
+                "Each contract pays $1.00 win / $0.00 loss. Your edge is superior probability assessment. "
+                "Use technical analysis of the underlying, recent news, momentum, and market structure "
+                "to assess true outcome probability vs the implied market price. "
+                "Bet YES when you think probability is underpriced, NO when overpriced. "
+                "Look for contracts with high volume and open interest (liquid markets). "
+                "Scale into highest-conviction bets. Require at least 7% edge."
+            ),
+            "scan_limit": 50,
+            "max_position_usd": 300,
+            "extended_hours": False,
+            "asset_class": "events",
+        },
+        "enabled": False,
+    },
     "momentum_conservative": {
         "name": "Momentum — Conservative",
         "description": "$2–$20 small-caps, 3x+ rel vol, 2 positions max, tight stops.",

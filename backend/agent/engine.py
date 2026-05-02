@@ -68,6 +68,8 @@ async def run_strategy(strategy: dict):
         await _options_agent(strategy)
     elif stype == "momentum":
         await _momentum_agent(strategy)
+    elif stype == "events":
+        await _events_agent(strategy)
 
 
 async def _sma_crossover(strategy: dict):
@@ -719,6 +721,197 @@ async def _options_agent(strategy: dict):
 
         except Exception as e:
             _log("ERROR", f"Options agent error on {symbol}: {e}")
+
+
+async def _events_agent(strategy: dict):
+    """
+    Prediction market agent. Fetches open Webull event contracts,
+    gets live YES/NO prices, asks LLM to pick bets, executes BUY YES/NO orders.
+    Each contract settles at $1.00 (win) or $0.00 (loss) — price = implied probability.
+    """
+    from backend.agent.llm import chat as llm_chat
+    import json, re
+
+    cfg = strategy.get("config", {})
+    system_prompt = cfg.get("system_prompt", (
+        "You are a disciplined prediction market trader on Webull. "
+        "Each contract pays $1 if the event happens, $0 if it doesn't. "
+        "The price IS the implied probability. You make money by finding mispriced probabilities. "
+        "Only bet when you have a strong opinion that the market price is significantly wrong. "
+        "Return [] if no contracts offer clear edge."
+    ))
+    account_id   = cfg.get("account_id") or None
+    strat_id     = strategy.get("id", "")
+    max_position = float(cfg.get("max_position_usd", 100))
+
+    session = webull._market_session()
+    if session == "closed":
+        _log("INFO", "Events agent: market closed overnight — skipping tick")
+        return
+
+    try:
+        acct = await webull.get_account()
+        available_bp = float(acct.get("buying_power", 0))
+    except Exception as e:
+        _log("WARN", f"Events: could not fetch account ({e}) — skipping tick")
+        return
+
+    if available_bp < 10:
+        _log("AGENT", f"Events: insufficient buying power (${available_bp:.2f}) — skipping tick")
+        return
+
+    # Fetch active event series
+    _log("AGENT", "Events agent: fetching prediction market series…")
+    try:
+        series_list = await webull.get_event_series()
+    except Exception as e:
+        _log("ERROR", f"Events: could not fetch series ({e})")
+        return
+
+    if not series_list:
+        _log("AGENT", "Events: no active prediction market series found")
+        return
+
+    # Collect contracts across all series (respect scan_limit)
+    scan_limit = int(cfg.get("scan_limit", 20))
+    all_contracts: list[dict] = []
+    for series in series_list[:10]:  # cap at 10 series
+        sym = series.get("series_symbol", "")
+        if not sym:
+            continue
+        try:
+            contracts = await webull.get_event_contracts(sym)
+            for c in contracts:
+                c["series_name"] = series.get("name", sym)
+            all_contracts.extend(contracts)
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+
+    if not all_contracts:
+        _log("AGENT", "Events: no open contracts found across all series")
+        return
+
+    all_contracts = all_contracts[:scan_limit]
+    _log("AGENT", f"Events: found {len(all_contracts)} open contracts — fetching live prices…")
+
+    # Get live YES/NO snapshots
+    contract_symbols = [c["symbol"] for c in all_contracts if c.get("symbol")]
+    snapshot_map: dict[str, dict] = {}
+    try:
+        snapshots = await webull.get_event_snapshot(contract_symbols)
+        snapshot_map = {s["symbol"]: s for s in snapshots}
+    except Exception as e:
+        _log("WARN", f"Events: snapshot fetch failed ({e}) — proceeding without live prices")
+
+    # Build batch context for LLM
+    contract_blocks: list[str] = []
+    for c in all_contracts:
+        sym = c.get("symbol", "")
+        snap = snapshot_map.get(sym, {})
+        yes_price = snap.get("yes_price") or snap.get("yes_ask") or 0
+        no_price  = round(1 - yes_price, 4) if yes_price else 0
+        vol       = snap.get("volume", 0)
+        oi        = snap.get("open_interest", 0)
+        if yes_price <= 0:
+            continue  # skip contracts with no live price
+        max_contracts = max(1, int(max_position / yes_price)) if yes_price > 0 else 1
+        contract_blocks.append(
+            f"--- {sym} ---\n"
+            f"Question: {c.get('question') or c.get('series_name', '')}\n"
+            f"Underlying: {c.get('underlying', 'N/A')} | Expires: {c.get('expiration', 'N/A')}\n"
+            f"YES price: ${yes_price:.2f} (implied {yes_price*100:.0f}% probability)\n"
+            f"NO  price: ${no_price:.2f} (implied {no_price*100:.0f}% probability)\n"
+            f"Volume: {vol:,} | Open Interest: {oi:,}\n"
+            f"Max contracts @ max_position (${max_position:.0f}): {max_contracts}\n"
+        )
+
+    if not contract_blocks:
+        _log("AGENT", "Events: no contracts with live prices — skipping LLM call")
+        return
+
+    context = (
+        f"=== PREDICTION MARKET SCAN — {len(contract_blocks)} CONTRACTS ===\n"
+        f"Available buying power: ${available_bp:.2f}\n"
+        f"Max position per trade: ${max_position:.0f}\n\n"
+        + "\n".join(contract_blocks)
+        + "\n=== INSTRUCTIONS ===\n"
+        "Each contract pays $1.00 if YES, $0.00 if NO at expiration.\n"
+        "Price = implied probability. Edge = your probability - market probability.\n"
+        "Only bet when you have strong conviction the market is mispriced by >10%.\n"
+        "quantity = int(max_position / limit_price)\n\n"
+        "Respond ONLY with a JSON array ([] if no bets):\n"
+        '[{"rank":1,"symbol":"SYM","outcome":"yes"|"no","quantity":<int>,'
+        '"limit_price":<float 0.01-0.99>,"reason":"<1 sentence>"}]'
+    )
+
+    _log("AGENT", f"Events: sending {len(contract_blocks)} contracts to LLM…")
+    raw = await llm_chat(context, system=system_prompt)
+
+    match = re.search(r'\[.*\]', raw, re.DOTALL)
+    if not match:
+        _log("ERROR", f"Events: LLM returned non-array: {raw[:200]}")
+        return
+    try:
+        bets: list[dict] = json.loads(match.group())
+    except json.JSONDecodeError as exc:
+        _log("ERROR", f"Events: JSON parse error ({exc})")
+        return
+
+    if not isinstance(bets, list) or not bets:
+        _log("AGENT", "Events: LLM found no prediction market edge this tick")
+        return
+
+    valid_syms = {c["symbol"] for c in all_contracts if c.get("symbol")}
+    for bet in bets:
+        sym      = (bet.get("symbol") or "").strip()
+        outcome  = (bet.get("outcome") or "yes").lower()
+        quantity = int(bet.get("quantity") or 0)
+        limit_px = float(bet.get("limit_price") or 0)
+        reason   = bet.get("reason", "")
+
+        if not sym or quantity <= 0 or not (0.01 <= limit_px <= 0.99):
+            continue
+        if sym not in valid_syms:
+            _log("WARN", f"Events: '{sym}' not in scanned contracts — skipping (hallucination guard)")
+            continue
+        if outcome not in ("yes", "no"):
+            continue
+
+        order_cost = limit_px * quantity
+        if order_cost > available_bp:
+            affordable = int(available_bp / limit_px)
+            if affordable <= 0:
+                _log("WARN", f"Events: skipping {sym} — insufficient BP (${available_bp:.2f} < ${order_cost:.2f})")
+                continue
+            quantity = affordable
+            order_cost = limit_px * quantity
+
+        _log("AGENT", f"Events decision: BUY {outcome.upper()} {quantity}x {sym} @ ${limit_px} — {reason}")
+
+        if settings.trading_mode == "live":
+            try:
+                result = await webull.place_event_order(sym, outcome, quantity, limit_px, account_id)
+                _log("ORDER", f"Event order: BUY {outcome.upper()} {quantity}x {sym} @ ${limit_px} — order_id={result.get('order_id','?')}", result)
+                available_bp -= order_cost
+            except RuntimeError as e:
+                err = str(e)
+                if err.startswith("ORDER_FAILED:"):
+                    _log("ERROR", f"Event order rejected {sym}: {err[len('ORDER_FAILED:'):]}")
+                elif err == "RATE_LIMITED":
+                    _log("WARN", "Rate limited — pausing 30s")
+                    await asyncio.sleep(30)
+                else:
+                    _log("ERROR", f"Event order failed {sym}: {e}")
+        else:
+            _log("PAPER", f"[PAPER] Events BUY {outcome.upper()} {quantity}x {sym} @ ${limit_px} — {reason}")
+
+        _record_decision(strat_id, {
+            "ts":     datetime.utcnow().isoformat(),
+            "symbol": sym, "action": f"BUY_{outcome.upper()}",
+            "qty":    quantity, "reason": reason, "mode": settings.trading_mode,
+        })
+        await asyncio.sleep(1)
 
 
 async def _momentum_agent(strategy: dict):

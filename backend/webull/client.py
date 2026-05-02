@@ -623,6 +623,205 @@ class WebullClient:
             "created_at":      datetime.utcnow().isoformat(),
         }
 
+    # ── Event / Prediction Markets ────────────────────────────────────────────────
+
+    def _get_data_client(self):
+        """Separate API client for Webull data endpoints."""
+        from webull.core.client import ApiClient
+        from webull.core.common.region import Region
+        client = ApiClient(
+            app_key=settings.webull_app_key,
+            app_secret=settings.webull_app_secret,
+            region_id=Region.US,
+        )
+        client.add_endpoint(Region.US, "data-api.webull.com", api_type="quotes-api")
+        client.add_endpoint(Region.US, "events-api.webull.com", api_type="events-api")
+        return client
+
+    async def get_event_series(self) -> list[dict]:
+        """Fetch active prediction market series (the questions/events)."""
+        if not _has_credentials():
+            return []
+        try:
+            return await asyncio.to_thread(self._live_get_event_series)
+        except Exception as e:
+            raise RuntimeError(f"Event series error: {e}") from e
+
+    def _live_get_event_series(self) -> list[dict]:
+        from webull.data.quotes.instrument import Instrument
+        inst = Instrument(self._get_data_client())
+        resp = inst.get_event_series(
+            category="US_EVENT",
+            symbols=[],
+            last_series_id="",
+            page_size=100,
+        )
+        raw = resp.json() if hasattr(resp, 'json') else resp
+        if not isinstance(raw, list):
+            raw = raw.get("data") or raw.get("result") or []
+        return [
+            {
+                "series_symbol": s.get("series_symbol") or s.get("seriesSymbol", ""),
+                "name":          s.get("series_name")   or s.get("seriesName",   ""),
+                "category":      s.get("category",      "US_EVENT"),
+                "status":        s.get("status",        ""),
+                "underlying":    s.get("underlying_symbol") or s.get("underlyingSymbol", ""),
+            }
+            for s in raw if isinstance(s, dict)
+        ]
+
+    async def get_event_contracts(self, series_symbol: str) -> list[dict]:
+        """Fetch tradeable contracts for a given event series."""
+        if not _has_credentials():
+            return []
+        try:
+            return await asyncio.to_thread(self._live_get_event_contracts, series_symbol)
+        except Exception as e:
+            raise RuntimeError(f"Event contracts error for {series_symbol}: {e}") from e
+
+    def _live_get_event_contracts(self, series_symbol: str) -> list[dict]:
+        from webull.data.quotes.instrument import Instrument
+        inst = Instrument(self._get_data_client())
+        resp = inst.get_event_instrument(
+            series_symbol=series_symbol,
+            event_symbol="",
+            symbols=[],
+            expiration_date_after="",
+            last_instrument_id="",
+            page_size=200,
+        )
+        raw = resp.json() if hasattr(resp, 'json') else resp
+        if not isinstance(raw, list):
+            raw = raw.get("data") or raw.get("result") or []
+        contracts = []
+        for c in raw:
+            if not isinstance(c, dict):
+                continue
+            contracts.append({
+                "symbol":          c.get("symbol",           ""),
+                "event_symbol":    c.get("event_symbol")    or c.get("eventSymbol", ""),
+                "series_symbol":   series_symbol,
+                "question":        c.get("event_name")      or c.get("eventName",   ""),
+                "expiration":      c.get("expiration_date") or c.get("expirationDate", ""),
+                "underlying":      c.get("underlying_symbol") or c.get("underlyingSymbol", ""),
+                "status":          c.get("status",           ""),
+            })
+        return contracts
+
+    async def get_event_snapshot(self, symbols: list[str]) -> list[dict]:
+        """Fetch live YES/NO prices for a list of event contract symbols."""
+        if not _has_credentials() or not symbols:
+            return []
+        try:
+            return await asyncio.to_thread(self._live_get_event_snapshot, symbols)
+        except Exception as e:
+            raise RuntimeError(f"Event snapshot error: {e}") from e
+
+    def _live_get_event_snapshot(self, symbols: list[str]) -> list[dict]:
+        from webull.data.quotes.event_market_data import EventMarketData
+        emd = EventMarketData(self._get_data_client())
+        resp = emd.get_event_snapshot(symbols=symbols, category="US_EVENT")
+        raw = resp.json() if hasattr(resp, 'json') else resp
+        if not isinstance(raw, list):
+            raw = raw.get("data") or raw.get("result") or []
+        snapshots = []
+        for s in raw:
+            if not isinstance(s, dict):
+                continue
+            # Prices are quoted in USD cents — convert to dollars
+            def _cents(key: str) -> float:
+                v = s.get(key, 0) or 0
+                return round(float(v) / 100, 4) if float(v) > 1 else round(float(v), 4)
+
+            snapshots.append({
+                "symbol":      s.get("symbol", ""),
+                "yes_bid":     _cents("yes_bid")  or _cents("bid"),
+                "yes_ask":     _cents("yes_ask")  or _cents("ask"),
+                "no_bid":      _cents("no_bid"),
+                "no_ask":      _cents("no_ask"),
+                "yes_price":   _cents("yes_price") or _cents("last_price") or _cents("close"),
+                "volume":      int(s.get("volume", 0) or 0),
+                "open_interest": int(s.get("open_interest") or s.get("openInterest", 0) or 0),
+            })
+        return snapshots
+
+    async def place_event_order(
+        self,
+        symbol: str,
+        outcome: str,       # "yes" or "no"
+        quantity: int,
+        limit_price: float, # 0.01–0.99 (price per contract; settles at $1 win / $0 loss)
+        account_id: Optional[str] = None,
+    ) -> dict:
+        if not _has_credentials():
+            return _stub_place_order(symbol, f"BUY_{outcome.upper()}", "LIMIT", quantity, limit_price)
+        try:
+            return await asyncio.to_thread(
+                self._live_place_event_order, symbol, outcome, quantity, limit_price, account_id
+            )
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "TOO_MANY_REQUESTS" in err:
+                raise RuntimeError("RATE_LIMITED") from e
+            raise RuntimeError(f"ORDER_FAILED:{err}") from e
+
+    def _live_place_event_order(self, symbol, outcome, quantity, limit_price, account_id=None) -> dict:
+        limit_price = max(0.01, min(0.99, round(float(limit_price), 2)))
+        order = {
+            "symbol":           symbol,
+            "instrument_type":  "EVENT",
+            "market":           "US",
+            "side":             "BUY",
+            "order_type":       "LIMIT",
+            "limit_price":      str(limit_price),
+            "quantity":         str(int(quantity)),
+            "time_in_force":    "DAY",
+            "combo_type":       "NORMAL",
+            "entrust_type":     "QTY",
+            "event_outcome":    outcome.lower(),  # "yes" or "no"
+        }
+        trade = self._get_trade()
+        accounts = self._selected_accounts()
+        aid = account_id or (accounts[0]["account_id"] if accounts else settings.webull_account_id)
+
+        resp = trade.order_v3.place_order(aid, [order])
+        if hasattr(resp, 'status_code') and resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code}: {getattr(resp, 'text', '')[:300]}")
+        try:
+            resp_data = resp.json() if hasattr(resp, 'json') else resp
+        except Exception as e:
+            raise RuntimeError(f"Unparseable event order response: {e}")
+        if isinstance(resp_data, list):
+            resp_data = resp_data[0] if resp_data else {}
+        if not isinstance(resp_data, dict):
+            raise RuntimeError(f"Unexpected event order response type: {type(resp_data).__name__}")
+        err_code = resp_data.get("error_code") or (
+            resp_data.get("code")
+            if str(resp_data.get("code", "")).lower() not in ("0", "success", "ok", "")
+            else None
+        )
+        if err_code:
+            err_msg = resp_data.get("error_msg") or resp_data.get("msg") or str(err_code)
+            raise RuntimeError(f"Webull event order error [{err_code}]: {err_msg}")
+        data = resp_data.get("data") or resp_data
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if not isinstance(data, dict):
+            data = {}
+        order_id = data.get("order_id") or data.get("combo_order_id")
+        if not order_id:
+            raise RuntimeError(f"No order ID from Webull event order. Response: {str(resp_data)[:400]}")
+        return {
+            "order_id":    order_id,
+            "symbol":      symbol,
+            "outcome":     outcome,
+            "quantity":    quantity,
+            "limit_price": limit_price,
+            "status":      "PENDING",
+            "account_id":  aid,
+            "created_at":  datetime.utcnow().isoformat(),
+        }
+
     # ── Market Data (Yahoo Finance — Webull data API requires paid subscription) ─
 
     async def get_quote(self, symbol: str) -> dict:
